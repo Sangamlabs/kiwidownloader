@@ -1,0 +1,18 @@
+# Environment variables (Never commit tokens or secrets!)
+.env
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Temporary files & downloads
+tmp/
+*.part
+*.ytdl
+*.mp4
+*.mp3
+*.m4a
+*.jpg
+*.jpeg
+*.png
