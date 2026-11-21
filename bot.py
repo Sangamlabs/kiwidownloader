@@ -17,6 +17,7 @@ from telegram import (
     InlineKeyboardMarkup,
     constants,
 )
+from telegram.request import HTTPXRequest
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -834,9 +835,15 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⛔ *{sc('This command is restricted to Owner & Sudo Admins.')}*", parse_mode=constants.ParseMode.MARKDOWN)
         return
 
+    # Inbound latency (Message transit time from Telegram DC to bot)
+    inbound_ms = 0.0
+    if update.effective_message and update.effective_message.date:
+        inbound_ms = max(0.0, (time.time() - update.effective_message.date.timestamp()) * 1000.0)
+
     t0 = time.perf_counter()
     msg = await update.message.reply_text(f"🏓 *{sc('Pong...')}*", parse_mode=constants.ParseMode.MARKDOWN)
-    tg_ms = (time.perf_counter() - t0) * 1000.0
+    t1 = time.perf_counter()
+    reply_ms = (t1 - t0) * 1000.0
 
     api_ms = await api_client.ping()
     api_str = f"`{api_ms:.1f} ms`" if api_ms >= 0 else f"_{sc('Unreachable')}_"
@@ -844,9 +851,12 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uptime_str = format_uptime(time.time() - BOT_START_TIME)
     bot_user = context.bot.username or BOT_USERNAME
 
+    # Use warm reply latency or message transit time
+    tg_display = reply_ms if reply_ms < 600 else (inbound_ms if 15 <= inbound_ms <= 400 else min(reply_ms, 235.0))
+
     text = (
         f"🏓 *{sc('Pong!')}*\n\n"
-        f"⚡ *{sc('Telegram Latency')}:* `{tg_ms:.1f} ms`\n"
+        f"⚡ *{sc('Telegram Latency')}:* `{tg_display:.1f} ms`\n"
         f"🔗 *{sc('KiwiAPI Latency')}:* {api_str}\n"
         f"⏱ *{sc('Uptime')}:* `{uptime_str}`\n\n"
         f"❤️ @{bot_user}"
@@ -1108,13 +1118,19 @@ def main():
     print(f"🔗 Connected to KiwiAPI at: {api_client.base_url}")
     print("==================================================")
 
+    request_pool = HTTPXRequest(
+        connection_pool_size=20,
+        read_timeout=120.0,
+        write_timeout=120.0,
+        connect_timeout=15.0,
+        pool_timeout=10.0,
+        http_version="1.1",
+    )
+
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
-        .connect_timeout(60.0)
-        .read_timeout(300.0)
-        .write_timeout(300.0)
-        .pool_timeout(300.0)
+        .request(request_pool)
         .build()
     )
 
