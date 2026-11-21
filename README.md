@@ -14,6 +14,13 @@ Powered by the **KiwiAPI** backend (`https://api.kiwiapi.net`).
   ```text
   ❤️ @YourBotUsername
   ```
+- 👥 **Group Chat (GC) Support**: Add the bot to any group chat. When members post media links, the bot replies directly to the link without spamming normal conversation.
+- 🛡️ **Owner & Sudo Admin System**:
+  - `/ping` — Measures Telegram round-trip and backend API latency.
+  - `/stats` — Displays live CPU, RAM, Disk usage, total downloads, and active user/group counts.
+  - `/gc` — Displays group stats and recently active groups.
+  - `/addsudo <id>` & `/rmsudo <id>` — Allows the Owner to add or remove Sudo Admins.
+  - `/listsudo` — Displays the list of authorized Sudo Admins.
 - 🔘 **Interactive Inline Buttons under every video**:
   - `[ 🎵 Extract Audio ]` — Instantly extracts 320 kbps MP3.
   - `[ 🔍 Identify Song ]` — Identifies background music using the Shazam engine.

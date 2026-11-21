@@ -13,6 +13,20 @@ class KiwiApiClient:
         self.base_url = base_url
         self.headers = headers
 
+    async def ping(self) -> float:
+        """Measure API ping latency in milliseconds, returns -1.0 if unreachable"""
+        start = asyncio.get_event_loop().time()
+        endpoint = f"{self.base_url}/docs"
+        timeout = httpx.Timeout(5.0, connect=3.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            try:
+                res = await client.get(endpoint)
+                if res.status_code == 200:
+                    return (asyncio.get_event_loop().time() - start) * 1000.0
+                return -1.0
+            except Exception:
+                return -1.0
+
     async def get_media_info(self, url: str) -> Optional[Dict[str, Any]]:
         """Fetch media metadata from KiwiAPI (/v1/info)"""
         endpoint = f"{self.base_url}/v1/info"
