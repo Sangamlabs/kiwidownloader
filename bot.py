@@ -15,6 +15,7 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputMediaPhoto,
     constants,
 )
 from telegram.request import HTTPXRequest
@@ -223,6 +224,39 @@ async def process_media_url(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     duration = info.get("duration", "")
     thumbnail = info.get("thumbnail", "")
 
+    # Check if this is a Photo / Carousel Post (Instagram, Pinterest, etc.)
+    images = info.get("images", [])
+    video_opts = info.get("video", [])
+    if images and (not video_opts or "/p/" in url.lower()):
+        try:
+            bot_user = context.bot.username or BOT_USERNAME
+            caption = f"📸 *{title}*\n👤 *{sc('Author')}:* {author}\n\n❤️ @{bot_user}"
+            if len(images) == 1:
+                img_url = images[0].get("url")
+                if img_url:
+                    await update.message.reply_photo(
+                        photo=img_url,
+                        caption=caption,
+                        parse_mode=constants.ParseMode.MARKDOWN,
+                        read_timeout=30,
+                        write_timeout=30,
+                    )
+                    await status_msg.delete()
+                    return
+            elif len(images) > 1:
+                media_group = []
+                for idx, img in enumerate(images[:10]):
+                    img_url = img.get("url")
+                    if img_url:
+                        cap = f"📸 *{title}*\n👤 *{sc('Author')}:* {author}\n🖼 *{sc('Photos')}:* {len(images)}\n\n❤️ @{bot_user}" if idx == 0 else ""
+                        media_group.append(InputMediaPhoto(media=img_url, caption=cap, parse_mode=constants.ParseMode.MARKDOWN))
+                if media_group:
+                    await update.message.reply_media_group(media=media_group, read_timeout=60, write_timeout=60)
+                    await status_msg.delete()
+                    return
+        except Exception as photo_err:
+            logger.warning(f"Direct photo send failed, falling back to download: {photo_err}")
+
     # Check if this is an instant short clip or YouTube long video
     if is_short_media(url, info):
         await download_and_send_video(
@@ -305,7 +339,15 @@ async def download_and_send_video(
     # Wait for completion on server
     ready = await api_client.wait_for_job(job_id)
     if not ready:
-        await status_msg.edit_text(f"❌ *{sc('Download failed or timed out on server.')}*", parse_mode=constants.ParseMode.MARKDOWN)
+        err = getattr(api_client, "last_error", "") or ""
+        if "login" in err.lower() or "rate-limit" in err.lower() or "redirected to the login" in err.lower():
+            await status_msg.edit_text(
+                f"⚠️ *{sc('Instagram is currently restricting anonymous access for this reel.')}*\n\n"
+                f"💡 {sc('Instagram server rate-limit hit. Please try another link or try again in a few minutes.')}",
+                parse_mode=constants.ParseMode.MARKDOWN
+            )
+        else:
+            await status_msg.edit_text(f"❌ *{sc('Download failed or timed out on server.')}*", parse_mode=constants.ParseMode.MARKDOWN)
         return
 
     increment_download_count()
@@ -364,19 +406,45 @@ async def download_and_send_video(
         file_size_mb = local_file.stat().st_size / (1024 * 1024)
         try:
             if file_size_mb <= 49.5:
-                await context.bot.send_chat_action(chat_id=target_chat_id, action=constants.ChatAction.UPLOAD_VIDEO)
-                with open(local_file, "rb") as video_file:
-                    await context.bot.send_video(
-                        chat_id=target_chat_id,
-                        video=video_file,
-                        caption=caption,
-                        reply_to_message_id=reply_to,
-                        supports_streaming=True,
-                        reply_markup=keyboard,
-                        read_timeout=300,
-                        write_timeout=300,
-                        connect_timeout=60,
-                    )
+                ext = local_file.suffix.lower()
+                if ext in (".jpg", ".jpeg", ".png", ".webp"):
+                    await context.bot.send_chat_action(chat_id=target_chat_id, action=constants.ChatAction.UPLOAD_PHOTO)
+                    with open(local_file, "rb") as pf:
+                        await context.bot.send_photo(
+                            chat_id=target_chat_id,
+                            photo=pf,
+                            caption=caption,
+                            reply_to_message_id=reply_to,
+                            reply_markup=keyboard,
+                            read_timeout=120,
+                            write_timeout=120,
+                        )
+                elif ext in (".zip", ".rar"):
+                    await context.bot.send_chat_action(chat_id=target_chat_id, action=constants.ChatAction.UPLOAD_DOCUMENT)
+                    with open(local_file, "rb") as zf:
+                        await context.bot.send_document(
+                            chat_id=target_chat_id,
+                            document=zf,
+                            caption=caption,
+                            reply_to_message_id=reply_to,
+                            reply_markup=keyboard,
+                            read_timeout=180,
+                            write_timeout=180,
+                        )
+                else:
+                    await context.bot.send_chat_action(chat_id=target_chat_id, action=constants.ChatAction.UPLOAD_VIDEO)
+                    with open(local_file, "rb") as video_file:
+                        await context.bot.send_video(
+                            chat_id=target_chat_id,
+                            video=video_file,
+                            caption=caption,
+                            reply_to_message_id=reply_to,
+                            supports_streaming=True,
+                            reply_markup=keyboard,
+                            read_timeout=300,
+                            write_timeout=300,
+                            connect_timeout=60,
+                        )
                 try:
                     await status_msg.delete()
                 except Exception:

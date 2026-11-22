@@ -1,5 +1,7 @@
 # Environment variables (Never commit tokens or secrets!)
 .env
+*cookie*.txt
+cookies.txt
 
 # Python bytecode
 __pycache__/

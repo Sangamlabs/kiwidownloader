@@ -99,6 +99,7 @@ class KiwiApiClient:
 
     async def wait_for_job(self, job_id: str, timeout: int = 300, poll_interval: float = 0.5) -> bool:
         """Poll job status until done or timeout"""
+        self.last_error = None
         base = await self.get_base_url()
         endpoint = f"{base}/v1/jobs/{job_id}"
         start_time = asyncio.get_event_loop().time()
@@ -114,6 +115,7 @@ class KiwiApiClient:
                         return True
                     elif status == "failed":
                         err_msg = data.get("error", "Unknown error")
+                        self.last_error = err_msg
                         logger.error(f"Job {job_id} failed on backend: {err_msg}")
                         return False
                 await asyncio.sleep(poll_interval)
