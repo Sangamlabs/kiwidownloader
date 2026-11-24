@@ -175,7 +175,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• *{sc('YouTube Long Videos')}:* {sc('Select your desired quality from the inline menu.')}\n"
         f"• *{sc('Extract Audio')}:* {sc('Click')} '{sc('Extract Audio')}' {sc('under any video, or send')} `/extract <link>`\n"
         f"• *{sc('Identify Song')}:* {sc('Click')} '{sc('Identify Song')}' {sc('under any video, or send')} `/audio <link>`\n"
-        f"• *{sc('Find Anime')}:* {sc('Click')} '{sc('Find Anime')}' {sc('under any video, or send')} `/anime <link>`"
+        f"• *{sc('Find Anime')}:* {sc('Click')} '{sc('Find Anime')}' {sc('under any video, or send')} `/anime <link>`\n"
+        f"• *{sc('Transcript')}:* {sc('Click')} '{sc('Transcript')}' {sc('under any video, or send')} `/tr <link>`"
         f"{sudo_help}\n\n"
         f"❤️ @{bot_user}"
     )
@@ -292,6 +293,7 @@ async def process_media_url(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         ])
         buttons.append([
             InlineKeyboardButton(f"🎌 {sc('Find Anime & Episode')}", callback_data=f"ani:{cache_id}"),
+            InlineKeyboardButton(f"📝 {sc('Transcript')}", callback_data=f"tr:{cache_id}"),
         ])
 
         keyboard = InlineKeyboardMarkup(buttons)
@@ -366,6 +368,7 @@ async def download_and_send_video(
         ],
         [
             InlineKeyboardButton(f"🎌 {sc('Find Anime & Episode')}", callback_data=f"ani:{cache_id}"),
+            InlineKeyboardButton(f"📝 {sc('Transcript')}", callback_data=f"tr:{cache_id}"),
         ]
     ])
 
@@ -459,6 +462,7 @@ async def download_and_send_video(
                     ],
                     [
                         InlineKeyboardButton(f"🎌 {sc('Find Anime & Episode')}", callback_data=f"ani:{cache_id}"),
+                        InlineKeyboardButton(f"📝 {sc('Transcript')}", callback_data=f"tr:{cache_id}"),
                     ]
                 ])
                 await status_msg.edit_text(
@@ -792,6 +796,21 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             url=session["url"],
         )
 
+    elif data.startswith("tr:"):
+        # Transcript callback: tr:<cache_id>
+        _, cache_id = data.split(":", 1)
+        session = url_store.get(cache_id)
+        if not session:
+            await query.message.reply_text(f"⚠️ *{sc('Session expired. Please send the link again.')}*", parse_mode=constants.ParseMode.MARKDOWN)
+            return
+        status_msg = await query.message.reply_text(f"📝 *{sc('Extracting video transcript & subtitles...')}*", parse_mode=constants.ParseMode.MARKDOWN)
+        await extract_and_send_transcript(
+            update=update,
+            context=context,
+            status_msg=status_msg,
+            url=session["url"],
+        )
+
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Detect media URLs in user text messages"""
@@ -890,6 +909,108 @@ async def anime_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     status_msg = await update.message.reply_text(f"🎌 *{sc('Scanning video scene for Anime & Episode...')}*", parse_mode=constants.ParseMode.MARKDOWN)
     await identify_and_send_anime(update, context, status_msg, url)
+
+
+async def extract_and_send_transcript(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    status_msg,
+    url: str,
+):
+    """Fetch and format transcript/subtitles for Telegram delivery"""
+    try:
+        data = await api_client.get_transcript(url)
+        if not data or not data.get("success"):
+            err_text = data.get("message") if data else "Failed to extract transcript."
+            await status_msg.edit_text(
+                f"❌ *{sc('No Transcript Found')}*\n\n_{err_text}_",
+                parse_mode=constants.ParseMode.MARKDOWN
+            )
+            return
+
+        title = data.get("title") or "Video Transcript"
+        language = (data.get("language") or "auto").upper()
+        source = "⚡ Official Captions" if data.get("source") == "native_subtitles" else "🤖 Gemini AI Speech-to-Text"
+        summary = data.get("summary") or ""
+        segments = data.get("segments") or []
+        full_text = data.get("text") or ""
+
+        header = (
+            f"📝 *{sc('Transcript')}:* *{title}*\n"
+            f"🌐 *{sc('Language')}:* `{language}` | *{sc('Source')}:* `{source}`\n"
+        )
+        if summary:
+            header += f"\n💡 *{sc('Summary')}:*\n_{summary}_\n"
+
+        header += f"\n───────────────\n"
+
+        if segments:
+            body_lines = [f"`[{s.get('start', '00:00')}]` {s.get('text', '')}" for s in segments]
+            body = "\n".join(body_lines)
+        else:
+            body = full_text
+
+        combined = header + "\n" + body
+
+        if len(combined) <= 4000:
+            await status_msg.edit_text(
+                combined,
+                parse_mode=constants.ParseMode.MARKDOWN
+            )
+        else:
+            preview_body = body[:2500] + "\n\n... _[Transcript truncated. Full version attached below as .txt]_"
+            await status_msg.edit_text(
+                header + "\n" + preview_body,
+                parse_mode=constants.ParseMode.MARKDOWN
+            )
+
+            clean_name = re.sub(r'[^a-zA-Z0-9_-]', '_', title)[:40]
+            txt_path = TEMP_DIR / f"{clean_name}_transcript.txt"
+            with open(txt_path, "w", encoding="utf-8") as f:
+                f.write(f"Title: {title}\nLanguage: {language}\nSource: {source}\n\nSummary:\n{summary}\n\n{'='*40}\n\n")
+                if segments:
+                    for s in segments:
+                        f.write(f"[{s.get('start')}] {s.get('text')}\n")
+                else:
+                    f.write(full_text)
+
+            try:
+                with open(txt_path, "rb") as doc:
+                    await context.bot.send_document(
+                        chat_id=update.effective_chat.id,
+                        document=doc,
+                        filename=f"{clean_name}_transcript.txt",
+                        caption=f"📄 *{sc('Full Transcript Document')}* ({len(segments)} {sc('segments')})",
+                        parse_mode=constants.ParseMode.MARKDOWN
+                    )
+            finally:
+                if txt_path.exists():
+                    txt_path.unlink(missing_ok=True)
+
+    except Exception as e:
+        logger.error(f"Error in extract_and_send_transcript: {e}", exc_info=True)
+        await status_msg.edit_text(f"❌ *{sc('An error occurred while generating transcript.')}*", parse_mode=constants.ParseMode.MARKDOWN)
+
+
+async def transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Direct command /tr or /transcript <url>"""
+    url = None
+    if context.args and len(context.args) > 0:
+        url = context.args[0]
+    elif update.message.reply_to_message and update.message.reply_to_message.text:
+        match = URL_PATTERN.search(update.message.reply_to_message.text)
+        if match:
+            url = match.group(1)
+
+    if not url:
+        await update.message.reply_text(
+            f"ℹ️ *{sc('Usage')}:* `/tr <url>` {sc('or reply to a video link to extract its transcript/subtitles.')}",
+            parse_mode=constants.ParseMode.MARKDOWN,
+        )
+        return
+
+    status_msg = await update.message.reply_text(f"📝 *{sc('Extracting video transcript & subtitles...')}*", parse_mode=constants.ParseMode.MARKDOWN)
+    await extract_and_send_transcript(update, context, status_msg, url)
 
 
 # ==========================================
@@ -1209,6 +1330,8 @@ def main():
     app.add_handler(CommandHandler("audio", audio_recognize_command))
     app.add_handler(CommandHandler("song", audio_recognize_command))
     app.add_handler(CommandHandler("anime", anime_command))
+    app.add_handler(CommandHandler("tr", transcript_command))
+    app.add_handler(CommandHandler("transcript", transcript_command))
 
     # Sudo & Admin Commands
     app.add_handler(CommandHandler("ping", ping_command))

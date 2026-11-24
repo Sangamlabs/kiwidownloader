@@ -183,3 +183,18 @@ class KiwiApiClient:
         except Exception as e:
             logger.error(f"Error identifying anime: {e}")
             return None
+
+    async def get_transcript(self, url: str) -> Optional[Dict[str, Any]]:
+        """Extract video transcript/subtitles via /v1/transcript"""
+        base = await self.get_base_url()
+        endpoint = f"{base}/v1/transcript"
+        client = await self.get_client()
+        try:
+            res = await client.post(endpoint, json={"url": url}, headers={"X-API-Key": HEADERS.get("X-API-Key", "")}, timeout=60.0)
+            if res.status_code == 200:
+                return res.json()
+            logger.error(f"Transcript extraction failed ({res.status_code}): {res.text}")
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching transcript: {e}")
+            return None
