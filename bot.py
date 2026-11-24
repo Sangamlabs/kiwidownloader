@@ -7,6 +7,7 @@ import os
 import re
 import uuid
 import time
+import html
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -17,6 +18,7 @@ from telegram import (
     InlineKeyboardMarkup,
     InputMediaPhoto,
     constants,
+    CopyTextButton,
 )
 from telegram.request import HTTPXRequest
 from telegram.ext import (
@@ -911,20 +913,45 @@ async def anime_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await identify_and_send_anime(update, context, status_msg, url)
 
 
+def _format_into_paragraphs(text: str, max_sentences_per_para: int = 4) -> str:
+    """Group continuous spoken text into clean, readable paragraphs without timestamps."""
+    if not text:
+        return ""
+    clean = text.strip()
+    if "\n\n" in clean:
+        return clean
+
+    # Split by sentence ending punctuation followed by space
+    sentences = re.split(r'(?<=[.!?])\s+', clean)
+    paragraphs = []
+    current_para = []
+    for s in sentences:
+        s = s.strip()
+        if not s:
+            continue
+        current_para.append(s)
+        if len(current_para) >= max_sentences_per_para:
+            paragraphs.append(" ".join(current_para))
+            current_para = []
+    if current_para:
+        paragraphs.append(" ".join(current_para))
+    return "\n\n".join(paragraphs) if paragraphs else clean
+
+
 async def extract_and_send_transcript(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     status_msg,
     url: str,
 ):
-    """Fetch and format transcript/subtitles for Telegram delivery"""
+    """Fetch and format transcript/subtitles as clean paragraphs inside an expandable quote"""
     try:
         data = await api_client.get_transcript(url)
         if not data or not data.get("success"):
             err_text = data.get("message") if data else "Failed to extract transcript."
             await status_msg.edit_text(
-                f"❌ *{sc('No Transcript Found')}*\n\n_{err_text}_",
-                parse_mode=constants.ParseMode.MARKDOWN
+                f"❌ <b>{html.escape(sc('No Transcript Found'))}</b>\n\n<i>{html.escape(err_text)}</i>",
+                parse_mode=constants.ParseMode.HTML
             )
             return
 
@@ -933,46 +960,79 @@ async def extract_and_send_transcript(
         source = "⚡ Official Captions" if data.get("source") == "native_subtitles" else "🤖 Gemini AI Speech-to-Text"
         summary = data.get("summary") or ""
         segments = data.get("segments") or []
-        full_text = data.get("text") or ""
+        raw_text = (data.get("text") or "").strip()
+
+        # Extract continuous speech text without timestamps
+        if not raw_text and segments:
+            raw_text = " ".join(s.get("text", "").strip() for s in segments if s.get("text"))
+
+        # Convert speech into clean, formatted paragraphs
+        transcript_paragraphs = _format_into_paragraphs(raw_text)
+
+        safe_title = html.escape(title)
+        safe_language = html.escape(language)
+        safe_source = html.escape(source)
+        safe_summary = html.escape(summary)
+        safe_transcript = html.escape(transcript_paragraphs)
 
         header = (
-            f"📝 *{sc('Transcript')}:* *{title}*\n"
-            f"🌐 *{sc('Language')}:* `{language}` | *{sc('Source')}:* `{source}`\n"
+            f"📝 <b>{sc('Transcript')}:</b> <b>{safe_title}</b>\n"
+            f"🌐 <b>{sc('Language')}:</b> <code>{safe_language}</code> | <b>{sc('Source')}:</b> <code>{safe_source}</code>\n"
         )
-        if summary:
-            header += f"\n💡 *{sc('Summary')}:*\n_{summary}_\n"
+        if safe_summary:
+            header += f"\n💡 <b>{sc('Summary')}:</b>\n<i>{safe_summary}</i>\n"
 
-        header += f"\n───────────────\n"
+        header += f"\n───────────────\n📋 <b>{sc('Transcript')}:</b>\n"
 
-        if segments:
-            body_lines = [f"`[{s.get('start', '00:00')}]` {s.get('text', '')}" for s in segments]
-            body = "\n".join(body_lines)
-        else:
-            body = full_text
+        # Check if one-tap copy button is supported (Telegram allows up to 1024 chars for copy_text)
+        reply_markup = None
+        if transcript_paragraphs and len(transcript_paragraphs) <= 1024:
+            try:
+                reply_markup = InlineKeyboardMarkup([
+                    [InlineKeyboardButton(f"📋 {sc('Copy Transcript')}", copy_text=CopyTextButton(text=transcript_paragraphs))]
+                ])
+            except Exception:
+                reply_markup = None
 
-        combined = header + "\n" + body
+        full_message = f"{header}<blockquote expandable>{safe_transcript}</blockquote>"
 
-        if len(combined) <= 4000:
+        # Telegram message limit: 4096. Keep safe margin under 3900 chars.
+        if len(full_message) <= 3900:
             await status_msg.edit_text(
-                combined,
-                parse_mode=constants.ParseMode.MARKDOWN
+                full_message,
+                parse_mode=constants.ParseMode.HTML,
+                reply_markup=reply_markup,
             )
         else:
-            preview_body = body[:2500] + "\n\n... _[Transcript truncated. Full version attached below as .txt]_"
+            avail = max(400, 3600 - len(header))
+            preview_text = transcript_paragraphs[:avail]
+            last_nl = preview_text.rfind("\n")
+            if last_nl > 200:
+                preview_text = preview_text[:last_nl]
+            safe_preview = html.escape(preview_text)
+
+            preview_msg = (
+                f"{header}<blockquote expandable>{safe_preview}</blockquote>\n\n"
+                f"⚠️ <i>[Transcript truncated for chat length. Full version attached below as .txt]</i>"
+            )
             await status_msg.edit_text(
-                header + "\n" + preview_body,
-                parse_mode=constants.ParseMode.MARKDOWN
+                preview_msg,
+                parse_mode=constants.ParseMode.HTML,
+                reply_markup=reply_markup,
             )
 
             clean_name = re.sub(r'[^a-zA-Z0-9_-]', '_', title)[:40]
             txt_path = TEMP_DIR / f"{clean_name}_transcript.txt"
             with open(txt_path, "w", encoding="utf-8") as f:
-                f.write(f"Title: {title}\nLanguage: {language}\nSource: {source}\n\nSummary:\n{summary}\n\n{'='*40}\n\n")
+                f.write(f"Title: {title}\nLanguage: {language}\nSource: {source}\n\n")
+                if summary:
+                    f.write(f"Summary:\n{summary}\n\n")
+                f.write(f"{'='*40}\nTranscript (Plain Paragraphs):\n{'='*40}\n\n")
+                f.write(transcript_paragraphs)
                 if segments:
+                    f.write(f"\n\n{'='*40}\nTimestamped Segments:\n{'='*40}\n\n")
                     for s in segments:
-                        f.write(f"[{s.get('start')}] {s.get('text')}\n")
-                else:
-                    f.write(full_text)
+                        f.write(f"[{s.get('start', '00:00')}] {s.get('text', '')}\n")
 
             try:
                 with open(txt_path, "rb") as doc:
@@ -980,8 +1040,8 @@ async def extract_and_send_transcript(
                         chat_id=update.effective_chat.id,
                         document=doc,
                         filename=f"{clean_name}_transcript.txt",
-                        caption=f"📄 *{sc('Full Transcript Document')}* ({len(segments)} {sc('segments')})",
-                        parse_mode=constants.ParseMode.MARKDOWN
+                        caption=f"📄 <b>{sc('Full Transcript Document')}</b>",
+                        parse_mode=constants.ParseMode.HTML
                     )
             finally:
                 if txt_path.exists():
@@ -989,7 +1049,10 @@ async def extract_and_send_transcript(
 
     except Exception as e:
         logger.error(f"Error in extract_and_send_transcript: {e}", exc_info=True)
-        await status_msg.edit_text(f"❌ *{sc('An error occurred while generating transcript.')}*", parse_mode=constants.ParseMode.MARKDOWN)
+        await status_msg.edit_text(
+            f"❌ <b>{sc('An error occurred while generating transcript.')}</b>",
+            parse_mode=constants.ParseMode.HTML
+        )
 
 
 async def transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
